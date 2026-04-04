@@ -1,0 +1,72 @@
+name: Sync upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    env:
+      UPSTREAM_URL: https://github.com/tailwindlabs/tailwindcss.git
+      UPSTREAM_REF: main
+
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Sync upstream into repository
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          git clone --depth 1 --branch "$UPSTREAM_REF" "$UPSTREAM_URL" "$tmp/upstream"
+
+          mkdir -p .chatgpt .github/workflows
+          find .github/workflows -mindepth 1 -maxdepth 1 -type f ! -name 'sync-upstream.yml' -delete || true
+
+          rsync -a --delete \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '.chatgpt/' \
+            "$tmp/upstream/" ./
+
+          UPSTREAM_SHA="$(git -C "$tmp/upstream" rev-parse HEAD)"
+
+          {
+            printf '# Mirror metadata\n\n'
+            printf '%s\n' "- Upstream: $UPSTREAM_URL"
+            printf '%s\n' "- Upstream ref: $UPSTREAM_REF"
+            printf '%s\n' "- Synced commit: $UPSTREAM_SHA"
+            printf '%s\n' "- Synced at (UTC): $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            printf '%s\n' "- Mode: full"
+            printf '%s\n' "- Purpose: Read/search reference for ChatGPT sessions"
+            printf '%s\n' "- Notes: Local edits to mirrored files are overwritten on sync"
+          } > .chatgpt/MIRROR.md
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "sync: $UPSTREAM_REF @ $UPSTREAM_SHA"
+          git push
